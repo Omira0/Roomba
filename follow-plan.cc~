@@ -1,0 +1,183 @@
+// Group number 4, Abdelrahman Amira, Victor Fan He, Zainib Mohammad
+// Modified for Project 5 with Laser-based Obstacle Avoidance
+
+#include <iostream>
+#include <libplayerc++/playerc++.h>
+#include <cmath>
+#include <fstream>
+
+using namespace PlayerCc;
+
+// Function headers
+player_pose2d_t readPosition(LocalizeProxy &lp);
+void printRobotData(BumperProxy &bp, player_pose2d_t pose);
+bool readPlan(const std::string &filename, std::vector<player_pose2d_t> &plan);
+
+int main(int argc, char *argv[])
+{
+    // Variables
+    double speed;         // How fast do we want the robot to go forwards?
+    double turnrate;      // How fast do we want the robot to turn?
+    player_pose2d_t pose; // For handling localization data
+
+    // Set up proxies
+    PlayerClient robot("localhost");
+    BumperProxy bp(&robot, 0);
+    Position2dProxy pp(&robot, 0);
+    LocalizeProxy lp(&robot, 0);
+    LaserProxy laser(&robot, 0);
+
+    // Allow the program to take charge of the motors
+    pp.SetMotorEnable(true);
+
+    // Read the plan from the file
+    std::vector<player_pose2d_t> plan;
+    if (!readPlan("plan.txt", plan))
+    {
+        std::cerr << "Error reading the plan from the file." << std::endl;
+        return 1;
+    }
+
+    // Proportional control parameters
+    double kp_translation = 0.2; // Proportional gain for translational movement
+    double kp_rotation = 0.5;    // Proportional gain for rotational movement
+
+    // Obstacle avoidance parameters
+    double obstacle_distance_threshold = 0.5; // Distance to consider an obstacle (adjust as needed)
+
+    // Loop through each waypoint in the plan
+    for (size_t i = 0; i < plan.size(); ++i)
+    {
+        const player_pose2d_t &waypoint = plan[i];
+
+        while (true)
+        {
+            // Update information from the robot
+            robot.Read();
+
+            // Read new information about position
+            pose = readPosition(lp);
+
+            // Print data on the robot to the terminal
+            printRobotData(bp, pose);
+
+            // Check for obstacles using laser
+            bool obstacleDetected = false;
+            for (size_t j = 0; j < laser.GetCount(); ++j)
+            {
+                double range = laser.GetRange(j);
+                if (range < obstacle_distance_threshold)
+                {
+                    obstacleDetected = true;
+                    break;
+                }
+            }
+
+            if (obstacleDetected)
+            {
+                // Obstacle detected, stop and turn
+                speed = 0;
+                turnrate = 0.5; // Turn to the right (adjust as needed)
+            }
+            else
+            {
+                // Calculate the angle to the waypoint using atan2
+                double angleToWaypoint = atan2(waypoint.py - pose.py, waypoint.px - pose.px);
+
+                // Calculate the difference between the current orientation and the desired direction
+                double angleDifference = angleToWaypoint - pose.pa;
+
+                // Proportional control for rotational movement
+                turnrate = kp_rotation * angleDifference;
+
+                // Proportional control for translational movement
+                double distanceToWaypoint = sqrt(pow(waypoint.px - pose.px, 2) + pow(waypoint.py - pose.py, 2));
+                speed = kp_translation * distanceToWaypoint;
+
+                // Limit speed to avoid overshooting
+                if (speed > 1.0)
+                {
+                    speed = 1.0;
+                }
+
+                // Stop if close to the waypoint
+                if (distanceToWaypoint < 0.5)
+                {
+                    speed = 0;
+                    turnrate = 0;
+                    std::cout << "Reached the waypoint!" << std::endl;
+                    break; // Exit the control loop for the current waypoint
+                }
+            }
+
+            // Send the commands to the robot
+            pp.SetSpeed(speed, turnrate);
+        }
+    }
+
+    return 0;
+}
+
+// Function to read the plan from a file
+bool readPlan(const std::string &filename, std::vector<player_pose2d_t> &plan)
+{
+    std::ifstream file(filename.c_str()); // Corrected file opening
+
+    if (!file.is_open())
+    {
+        return false;
+    }
+
+    int n;
+    file >> n;
+
+    if (n <= 0 || n % 2 != 0)
+    {
+        return false; // Invalid plan format
+    }
+
+    plan.resize(n / 2);
+
+    for (int i = 0; i < n / 2; ++i)
+    {
+        file >> plan[i].px >> plan[i].py;
+    }
+
+    file.close();
+    return true;
+}
+
+// Function to read the current position from the localization proxy
+player_pose2d_t readPosition(LocalizeProxy &lp)
+{
+    player_localize_hypoth_t hypothesis;
+    player_pose2d_t pose;
+    uint32_t hCount;
+
+    // Need some messing around to avoid a crash when the proxy is
+    // starting up.
+    hCount = lp.GetHypothCount();
+
+    if (hCount > 0)
+    {
+        hypothesis = lp.GetHypoth(0);
+        pose = hypothesis.mean;
+    }
+
+    return pose;
+}
+
+// Function to print data on the state of the bumpers and the current location
+void printRobotData(BumperProxy &bp, player_pose2d_t pose)
+{
+    // Print out what the bumpers tell us:
+    std::cout << "Left  bumper: " << bp[0] << std::endl;
+    std::cout << "Right bumper: " << bp[1] << std::endl;
+
+    // Print out where we are
+    std::cout << "We are at" << std::endl;
+    std::cout << "X: " << pose.px << std::endl;
+    std::cout << "Y: " << pose.py << std::endl;
+    std::cout << "A: " << pose.pa << std::endl;
+}
+
